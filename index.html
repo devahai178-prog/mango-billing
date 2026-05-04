@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;">
 <title>Mango Shoppe – Billing System</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@400;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
@@ -483,14 +484,62 @@ const SHOP = {
 };
 
 // ── GOOGLE SHEETS API ──
-const API_URL = 'https://script.google.com/macros/s/AKfycbzwNN53cRnhRlFwHwcHr_yhju0aKET1kt9c5TXjHkFXQ3EUTEgbmNyAnji59mFB9op-/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbwzQcjCrqyvkHzE5qAoYAHl8xbQoEs_BVkWh1y1LvTLDXJat7pRz18eph2Raf4fevLp9A/exec';
+
+// ── JSONP (CORS-safe API calls) ──
+function jsonp(params) {
+  return new Promise((resolve, reject) => {
+    const cb = 'ms_cb_' + Date.now() + '_' + Math.floor(Math.random()*9999);
+    const timer = setTimeout(() => {
+      delete window[cb];
+      try { document.getElementById('_jf')?.remove(); } catch(e){}
+      reject(new Error('Timeout'));
+    }, 25000);
+
+    window[cb] = function(data) {
+      clearTimeout(timer);
+      delete window[cb];
+      try { document.getElementById('_jf')?.remove(); } catch(e){}
+      resolve(data);
+    };
+
+    // Use iframe form POST — bypasses CSP & CORS completely
+    const qs = new URLSearchParams({ ...params, callback: cb }).toString();
+    const iframe = document.createElement('iframe');
+    iframe.id = '_jf';
+    iframe.name = '_jf';
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+
+    const form = document.createElement('form');
+    form.method = 'GET';
+    form.action = API_URL;
+    form.target = '_jf';
+    
+    // Add all params as hidden inputs
+    Object.entries({ ...params, callback: cb }).forEach(([k, v]) => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = k;
+      input.value = v;
+      form.appendChild(input);
+    });
+
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  });
+}
+
+// ── SAVE INVOICE (CLOUD) ──
+
+// ── AUTH (LOCAL - fast & reliable) ──
 const USERS = [
   { id: 'amjad', pass: 'mango123' },
   { id: 'admin', pass: 'shoppe@2025' }
 ];
 
-// ── AUTH ──
-function doLogin() {
+async function doLogin() {
   const id = document.getElementById('login-id').value.trim().toLowerCase();
   const pass = document.getElementById('login-pass').value;
   const errEl = document.getElementById('login-error');
@@ -499,12 +548,13 @@ function doLogin() {
   const match = USERS.find(u => u.id === id && u.pass === pass);
   if (match) {
     sessionStorage.setItem('ms_auth', '1');
+    sessionStorage.setItem('ms_user', id);
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-app').style.display = 'block';
     errEl.textContent = '';
     init();
   } else {
-    errEl.textContent = 'Invalid ID or Password. Try again.';
+    errEl.textContent = 'Wrong ID or Password!';
     box.classList.remove('login-shake');
     void box.offsetWidth;
     box.classList.add('login-shake');
@@ -516,6 +566,7 @@ function doLogin() {
 function doLogout() {
   if (confirm('Logout karna chahte ho?')) {
     sessionStorage.removeItem('ms_auth');
+    sessionStorage.removeItem('ms_user');
     document.getElementById('main-app').style.display = 'none';
     document.getElementById('login-screen').style.display = 'flex';
     document.getElementById('login-id').value = '';
@@ -785,9 +836,7 @@ async function saveInvoice() {
 
   toast('Saving...⏳', '#4f7aff');
   try {
-    const params = new URLSearchParams({ data: JSON.stringify(entry) });
-    const res = await fetch(API_URL + '?' + params.toString());
-    const data = await res.json();
+    const data = await jsonp({ action: 'save', data: JSON.stringify(entry) });
     if (data.status === 'ok') {
       const maxNum = Math.max(parseInt(invNum), ...cloudHistory.map(i => parseInt(i.invNum) || 0));
       localStorage.setItem('ms_inv_num', maxNum + 1);
@@ -985,8 +1034,7 @@ async function loadHistory() {
   const tbody = document.getElementById('hist-body');
   tbody.innerHTML = `<tr><td colspan="6" class="no-data" style="color:var(--accent2);">Loading... ⏳</td></tr>`;
   try {
-    const res = await fetch(API_URL + '?action=get');
-    const data = await res.json();
+    const data = await jsonp({ action: 'get' });
     if (data.status !== 'ok') throw new Error(data.msg);
 
     const rows = data.rows.slice(1); // skip header row
@@ -1035,12 +1083,11 @@ async function deleteInvoice(invNum) {
   if (!confirm('Invoice #' + invNum + ' delete karna chahte ho?')) return;
   toast('Deleting...', '#4f7aff');
   try {
-    const params = new URLSearchParams({ data: JSON.stringify({ action: 'delete', invNum }) });
-    await fetch(API_URL + '?' + params.toString());
+    await jsonp({ action: 'delete', invNum: String(invNum) });
     toast('Deleted! ✓');
     loadHistory();
   } catch(err) {
-    toast('Delete failed. Internet check karo.', '#ff5c5c');
+    toast('Delete failed: ' + err.message, '#ff5c5c');
   }
 }
 
